@@ -1,0 +1,288 @@
+---
+title: "Case Macro 4intelligence"
+author: "Fernando Picchetti"
+date: "2025-01-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Mercado de Combustíveis
+## Análise de dados da ANP
+### Carregando pacotes
+Antes de qualquer coisa, é necessário carregar os pacotes do R que serão necessários
+```{r}
+library(readxl)
+library(tidyr)
+library(dplyr)
+library(urca)
+library(ggplot2)
+```
+
+### Importando e formatando os dados
+O primeiro passo para a análise de dados a seguir foi carregar os dados que estavam em formato de tabela na planilha disponibilizada. Após algumas manipulações, foi possível formatar os dados em 27 séries de tempo: uma para cada combustível em cada unidade geográfica analisada. A estratégia utilizada foi criar uma função que fizesse as manipulações comuns a todas as séries e aplicá-la nos diferentes conjuntos de dados.
+```{r, message=FALSE, warning=FALSE}
+func <- function(sheet_name, range_start, range_end, meses, start) {
+  data <- read_excel("vendas_distribuidoras_anp 1.xlsx",
+                     sheet = sheet_name, range = paste0("C", range_start, ":X", range_end),
+                     col_names = FALSE)
+  data <- as_tibble(t(data), .name_repair = 'minimal')
+  colnames(data) <- meses
+  data <- data %>%
+    pivot_longer(cols = everything(), names_to = "mes", values_to = "vendas_m3") %>%
+    select(-mes)
+  ts(data, start = start, frequency = 12)
+}
+
+meses <- c('1','2','3','4','5','6','7','8','9','10','11','12')
+start <- c(2000,01)
+
+df_diesel_ts <- func("diesel", 2, 13, meses, start)
+go_diesel_ts <- func("diesel", 14, 25, meses, start)
+ma_diesel_ts <- func("diesel", 26, 37, meses, start)
+mt_diesel_ts <- func("diesel", 38, 49, meses, start)
+mg_diesel_ts <- func("diesel", 50, 61, meses, start)
+pa_diesel_ts <- func("diesel", 62, 73, meses, start)
+sp_diesel_ts <- func("diesel", 74, 85, meses, start)
+to_diesel_ts <- func("diesel", 86, 97, meses, start)
+br_diesel_ts <- func("diesel", 98, 109, meses, start)
+
+df_gasolina_ts <- func("gasolina", 2, 13, meses, start)
+go_gasolina_ts <- func("gasolina", 14, 25, meses, start)
+ma_gasolina_ts <- func("gasolina", 26, 37, meses, start)
+mt_gasolina_ts <- func("gasolina", 38, 49, meses, start)
+mg_gasolina_ts <- func("gasolina", 50, 61, meses, start)
+pa_gasolina_ts <- func("gasolina", 62, 73, meses, start)
+sp_gasolina_ts <- func("gasolina", 74, 85, meses, start)
+to_gasolina_ts <- func("gasolina", 86, 97, meses, start)
+br_gasolina_ts <- func("gasolina", 98, 109, meses, start)
+
+df_etanol_ts <- func("etanol", 2, 13, meses, start)
+go_etanol_ts <- func("etanol", 14, 25, meses, start)
+ma_etanol_ts <- func("etanol", 26, 37, meses, start)
+mt_etanol_ts <- func("etanol", 38, 49, meses, start)
+mg_etanol_ts <- func("etanol", 50, 61, meses, start)
+pa_etanol_ts <- func("etanol", 62, 73, meses, start)
+sp_etanol_ts <- func("etanol", 74, 85, meses, start)
+to_etanol_ts <- func("etanol", 86, 97, meses, start)
+br_etanol_ts <- func("etanol", 98, 109, meses, start)
+```
+### Sazonalidade
+Como o interesse está em analisar a sazonalidade da venda de combustíveis de forma geral e não de algum dos três em particular, criaram-se novas séries de tempo que agregam as vendas de diesel, etanol e gasolina para cada estado e para o Brasil. A agregação foi feita por meio de uma soma simples das séries individuais, já que todas estão na mesma unidade de medida (m³).
+```{r}
+df_combustíveis_ts <- df_etanol_ts + df_gasolina_ts + df_diesel_ts
+go_combustíveis_ts <- go_etanol_ts + go_gasolina_ts + go_diesel_ts
+ma_combustíveis_ts <- ma_etanol_ts + ma_gasolina_ts + ma_diesel_ts
+mt_combustíveis_ts <- mt_etanol_ts + mt_gasolina_ts + mt_diesel_ts
+mg_combustíveis_ts <- mg_etanol_ts + mg_gasolina_ts + mg_diesel_ts
+pa_combustíveis_ts <- pa_etanol_ts + pa_gasolina_ts + pa_diesel_ts
+sp_combustíveis_ts <- sp_etanol_ts + sp_gasolina_ts + sp_diesel_ts
+to_combustíveis_ts <- to_etanol_ts + to_gasolina_ts + to_diesel_ts
+br_combustíveis_ts <- br_etanol_ts + br_gasolina_ts + br_diesel_ts
+```
+O método utilizado para avaliar a sazonalidade das séries será a inspeção das Funções de autocorrelação (FAC).  Contudo, para decidir se é mais adequado analisar a FAC das séries em nível ou em diferença, é necessário testar para a presença de raiz unitária. A seguir são apresentados testes de Dickey-Fuller Aumentados (ADF) para cada uma das séries. O procedimento adotado foi começar com o modelo mais completo (com tendência determinística e intercepto) e repetir o teste retirando os componentes que não se mostraram significantes a um nível de 5%.  
+
+#### Teste ADF com série do DF
+```{r}
+adf_test <- ur.df(na.omit(df_combustíveis_ts), type = "trend", lags = 10)
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária, mas o intercepto e a tendência determinística não são estatisticamente significantes. Logo, segue o teste sem componentes determinísticos: 
+```{r}
+adf_test <- ur.df(na.omit(df_combustíveis_ts), type = "none", lags = 10)
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária, logo o correto será trabalhar com a série em primeira diferença. 
+
+#### Teste ADF com série de GO
+```{r}
+adf_test <- ur.df(na.omit(go_combustíveis_ts), type = "trend", lags = 10)
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária, mas o intercepto e a tendência determinística não são estatisticamente significantes. Logo, segue o teste sem componentes determinísticos: 
+```{r}
+adf_test <- ur.df(na.omit(go_combustíveis_ts), type = "none", lags = 10)
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária, logo o correto será trabalhar com a série em primeira diferença. 
+
+#### Teste ADF com série do MA
+```{r}
+adf_test <- ur.df(na.omit(ma_combustíveis_ts), type = "trend", lags = 10)
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária, mas a tendência determinística não é estatisticamente significante. Logo, segue o teste apenas com *drift*: 
+```{r}
+adf_test <- ur.df(na.omit(ma_combustíveis_ts), type = "drift", lags = 10)
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária, mas o intercepto deixou de ser significante. Assim, repete-se o teste sem componentes determinísticos:
+```{r}
+adf_test <- ur.df(na.omit(ma_combustíveis_ts), type = "none", lags = 10)
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária, logo o correto será trabalhar com a série em primeira diferença. 
+
+#### Teste ADF com série do MT
+```{r}
+adf_test <- ur.df(na.omit(mt_combustíveis_ts), type = "trend", lags = 10)
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária e a tendência é estatisticamente significante. Então, o correto será trabalhar com a série em primeira diferença. 
+
+#### Teste ADF com série de MG
+```{r}
+adf_test <- ur.df(na.omit(mg_combustíveis_ts), type = "trend", lags = 10)
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária, mas o intercepto e a tendência determinística não são estatisticamente significantes. Logo, segue o teste sem componentes determinísticos: 
+```{r}
+adf_test <- ur.df(na.omit(mg_combustíveis_ts), type = "none", lags = 10)
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária, logo o correto será trabalhar com a série em primeira diferença. 
+
+#### Teste ADF com série do PA
+```{r}
+adf_test <- ur.df(na.omit(pa_combustíveis_ts), type = "trend", lags = 10)
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária e o intercepto e a tendência determinística são estatisticamente significantes, de modo que o correto será trabalhar com a série diferenciada. 
+#### Teste ADF com série de SP
+```{r}
+adf_test <- ur.df(na.omit(sp_combustíveis_ts), type = "trend", lags = 10)
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária, mas o intercepto e a tendência determinística não são estatisticamente significantes. Logo, segue o teste sem componentes determinísticos: 
+```{r}
+adf_test <- ur.df(na.omit(sp_combustíveis_ts), type = "none", lags = 10)
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária, logo o correto será trabalhar com a série em primeira diferença. 
+
+#### Teste ADF com série do TO
+```{r}
+adf_test <- ur.df(na.omit(to_combustíveis_ts), type = "trend", lags = 10)  
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária e aponta que o intercepto e a tendência determinística são estatisticamente significantes. Portanto, a série deverá ser analisada em primeira diferença.
+#### Teste ADF com série do Brasil
+```{r}
+adf_test <- ur.df(na.omit(br_combustíveis_ts), type = "trend", lags = 10)  
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária, mas o intercepto e a tendência determinística não são estatisticamente significantes. Logo, segue o teste sem componentes determinísticos: 
+```{r}
+adf_test <- ur.df(na.omit(br_combustíveis_ts), type = "none", lags = 10)
+summary(adf_test)
+```
+O teste não rejeita a nula de raiz unitária, logo o correto será trabalhar com a série em primeira diferença. 
+
+#### Inspeção visual das FACs
+
+Dessa maneira, podemos analisar as FACs de todas as séries em primeira diferença.
+```{r}
+acf(na.omit(diff(df_combustíveis_ts)), lag.max =60)
+acf(na.omit(diff(go_combustíveis_ts)), lag.max =60)
+acf(na.omit(diff(ma_combustíveis_ts)), lag.max =60)
+acf(na.omit(diff(mt_combustíveis_ts)), lag.max =60)
+acf(na.omit(diff(mg_combustíveis_ts)), lag.max =60)
+acf(na.omit(diff(pa_combustíveis_ts)), lag.max =60)
+acf(na.omit(diff(sp_combustíveis_ts)), lag.max =60)
+acf(na.omit(diff(to_combustíveis_ts)), lag.max =60)
+acf(na.omit(diff(br_combustíveis_ts)), lag.max =60)
+```
+
+Fica evidente que, em todas as séries, a autocorrelação dispara após 12 defasagens - isto é, um ano - e também pode ficar minimamente significante nas defasagens adjacentes. Fenômeno similar, mas de magnitude menor e sinal trocado, ocorre nas defasagens referentes à metade do ano. O gráfico da FAC referente à série do Mato Grosso apresenta uma maior quantidade de defasagens significantes, provavelmente deivdo à presença de tendência determinística. Contudo, não se julgou necessário fazer o *detrending* da série, pois ainda é possível observar a sazonalidade. 
+Em suma, a sazonalidade é semestral, sendo mais acentuada anualmente (ou seja, de 2 em 2 semestres). 
+
+### Consumo de combustível por estado 
+Para analisar a distribuição do consumo de cada combustível entre os estados brasileiros, serão apresentados gráficos que mostram as séries de cada estado por combustível conjuntamente e sua evolução no tempo. Um mapa também seria uma forma interessante de mostrar esse tipo de informação, mas como há dados para poucos estados, julgou-se que gráficos de linha seriam mais simples e diretos.
+
+#### Diesel
+```{r, message=FALSE, warning=FALSE}
+ggplot() +
+  geom_line(aes(x = time(df_diesel_ts), y = as.numeric(df_diesel_ts), color = "DF")) +
+  geom_line(aes(x = time(go_diesel_ts), y = as.numeric(go_diesel_ts), color = "GO")) +  
+  geom_line(aes(x = time(ma_diesel_ts), y = as.numeric(ma_diesel_ts), color = "MA")) +  
+  geom_line(aes(x = time(mg_diesel_ts), y = as.numeric(mg_diesel_ts), color = "MG")) +  
+  geom_line(aes(x = time(mt_diesel_ts), y = as.numeric(mt_diesel_ts), color = "MT")) +  
+  geom_line(aes(x = time(pa_diesel_ts), y = as.numeric(pa_diesel_ts), color = "PA")) +  
+  geom_line(aes(x = time(sp_diesel_ts), y = as.numeric(sp_diesel_ts), color = "SP")) +  
+  geom_line(aes(x = time(to_diesel_ts), y = as.numeric(to_diesel_ts), color = "TO")) +  
+  labs(title = "Diesel", 
+       x = "Ano", 
+       y = "m3", 
+       color = "Series") +
+  scale_color_manual(values = c("DF" = "blue", "GO" = "red", "MA" = "green", 
+                                "MG" = "purple", "MT" = "orange", "PA" = "brown", 
+                                "SP" = "pink", "TO" = "gray")) +
+  theme_minimal()
+```
+
+Dentre os estados analisados, o estado com maior consumidor de diesel em qualquer período é São Paulo, seguido de Minas Gerais em um patamar inferior. Abaixo de Minas, encontram-se Mato Grosso, Pará e Goiás, sendo que qual deles consome mais varia com o tempo, mas todos o fazem na mesma ordem de grandeza. Em seguida, aparecem, em ordem decrescente de quantidade consumida, Maranhão, Tocantins e o Distrito Federal, sendo que o último consome muito pouco diesel comparado aos demais. 
+
+#### Etanol
+```{r, message=FALSE, warning=FALSE}
+ggplot() +
+  geom_line(aes(x = time(df_etanol_ts), y = as.numeric(df_etanol_ts), color = "DF")) +
+  geom_line(aes(x = time(go_etanol_ts), y = as.numeric(go_etanol_ts), color = "GO")) +  
+  geom_line(aes(x = time(ma_etanol_ts), y = as.numeric(ma_etanol_ts), color = "MA")) +  
+  geom_line(aes(x = time(mg_etanol_ts), y = as.numeric(mg_etanol_ts), color = "MG")) +  
+  geom_line(aes(x = time(mt_etanol_ts), y = as.numeric(mt_etanol_ts), color = "MT")) +  
+  geom_line(aes(x = time(pa_etanol_ts), y = as.numeric(pa_etanol_ts), color = "PA")) +  
+  geom_line(aes(x = time(sp_etanol_ts), y = as.numeric(sp_etanol_ts), color = "SP")) +  
+  geom_line(aes(x = time(to_etanol_ts), y = as.numeric(to_etanol_ts), color = "TO")) +  
+  labs(title = "Etanol", 
+       x = "Ano", 
+       y = "m3", 
+       color = "Series") +
+  scale_color_manual(values = c("DF" = "blue", "GO" = "red", "MA" = "green", 
+                                "MG" = "purple", "MT" = "orange", "PA" = "brown", 
+                                "SP" = "pink", "TO" = "gray")) +
+  theme_minimal()
+```
+
+O consumo de etanol é consideravelmente menor que o dos demais combustíveis nos primeiros períodos analisados. A partir de 2005, a série de São Paulo, que sempre é o maior consumidor, aumenta consideravelmente se distanciando das demais. As séries de Minas Gerais, de Goiás e do Mato Grosso também apresentam crescimento, porém mais recente e menos acentuado, de maneira que são, nos dados mais recentes, o segundo, terceiro e quarto maior consumidores de etanol, respectivamente. Os demais estados apresentam um nível de consumo de etanol pouco relevante quando comparados aos quatro já mencionados.
+
+#### Gasolina
+```{r, message=FALSE, warning=FALSE}
+ggplot() +
+  geom_line(aes(x = time(df_gasolina_ts), y = as.numeric(df_gasolina_ts), color = "DF")) +
+  geom_line(aes(x = time(go_gasolina_ts), y = as.numeric(go_gasolina_ts), color = "GO")) +  
+  geom_line(aes(x = time(ma_gasolina_ts), y = as.numeric(ma_gasolina_ts), color = "MA")) +  
+  geom_line(aes(x = time(mg_gasolina_ts), y = as.numeric(mg_gasolina_ts), color = "MG")) +  
+  geom_line(aes(x = time(mt_gasolina_ts), y = as.numeric(mt_gasolina_ts), color = "MT")) +  
+  geom_line(aes(x = time(pa_gasolina_ts), y = as.numeric(pa_gasolina_ts), color = "PA")) +  
+  geom_line(aes(x = time(sp_gasolina_ts), y = as.numeric(sp_gasolina_ts), color = "SP")) +  
+  geom_line(aes(x = time(to_gasolina_ts), y = as.numeric(to_gasolina_ts), color = "TO")) +  
+  labs(title = "Gasolina", 
+       x = "Ano", 
+       y = "m3", 
+       color = "Series") +
+  scale_color_manual(values = c("DF" = "blue", "GO" = "red", "MA" = "green", 
+                                "MG" = "purple", "MT" = "orange", "PA" = "brown", 
+                                "SP" = "pink", "TO" = "gray")) +
+  theme_minimal()
+```
+
+No caso da gasolina, São Paulo também é o maior consumidor histórico, seguido de Minas Gerais, em um nível consistentemente mais baixo. Os estados restantes apresentam um nível similar de consumo de gasolina, significativamente inferior ao de Minas e São Paulo. Em alguns anos, Goiás e DF se sobressaem ligeiramente, mas em tempos recentes se encontram juntos dos outros, com exceção do Mato Grosso e do Tocantins que estão em um patamar ainda mais baixo
+
+### Tamanho total do mercado
+Para a análise do total do mercado, foram considerados os dados do Brasil como um todo. Algumas estatísticas descritivas ajudam a ter uma noção geral a respeito do tamanho desse mercado.
+```{r}
+min(na.omit(br_combustíveis_ts))
+max(na.omit(br_combustíveis_ts))    
+mean(na.omit(br_combustíveis_ts))
+```
+Nota-se que o tamanho do mercado variou bastante, tendo como consumo mínimo de combustíveis 4556363 m³ e máximo de 10941679 m³. A média do período analisado foi de 7612198 m³.
+A evolução desse mercado nos últimos 5 anos pode ser vista no gráfico a seguir, que recortou esse período para maior precisão:
+```{r}
+subset_ts <- window(br_combustíveis_ts, start=c(2016, 4), end=c(2021, 4))
+
+plot(subset_ts, main="Consumo de Combustível nos Últimos 5 Anos", 
+     ylab="m³", xlab="Ano")
+```
+
+Percebe-se que a série oscilou em torno dos 9000000 m³, mesmo que com algumas quedas e subidas abruptas no intervalo entre 750000 m³ e 10500000 m³, sendo a mais aguda delas no começo de 2020, momento que marcou o início da pandemia de Covid-19 no Brasil.
